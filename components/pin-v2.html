@@ -51,7 +51,7 @@ import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer
 import { MeshSurfaceSampler }     from 'three/addons/math/MeshSurfaceSampler.js';
 import { mergeGeometries }        from 'three/addons/utils/BufferGeometryUtils.js';
 
-<!-- CORE CODE START -->
+/* CORE CODE START */
 // ─── GPGPU: physics shader ────────────────────────────────────────────────
 // Uses 3D value noise + curl-noise flow field. Independent implementation.
 const physicsShader = /* glsl */`
@@ -306,7 +306,7 @@ class ParticleCloud {
       this.gpgpu.gcr.getCurrentRenderTarget(this.gpgpu.variable).texture;
   }
 }
-<!-- CORE CODE END -->
+/* CORE CODE END */
 
 // ─── Scene setup ─────────────────────────────────────────────────────────
 const canvas = document.createElement('canvas');
