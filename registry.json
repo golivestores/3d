@@ -1,0 +1,25 @@
+{
+  "components": [
+    {
+      "id": "pin-infracorp",
+      "title": "Location Pin — Flow Field",
+      "description": "GPGPU particle flow field applied to a 3D location pin model. Uses 4D Simplex noise to drive divergence-free particle motion. Core FlowFieldParticles class extracted from infracorp.global.",
+      "file": "components/pin-infracorp.html",
+      "tags": ["Three.js", "GPGPU", "Flow Field", "Particles", "Simplex Noise", "WebGL"],
+      "complexity": 3,
+      "source": "https://infracorp.global",
+      "sourceLabel": "infracorp.global",
+      "addedAt": "2026-05-04"
+    },
+    {
+      "id": "pin-v2",
+      "title": "Location Pin — Particle Cloud",
+      "description": "Clean-room GPGPU particle system using 3D value noise and curl noise via finite-difference derivatives. Independent implementation — no third-party shader code.",
+      "file": "components/pin-v2.html",
+      "tags": ["Three.js", "GPGPU", "Curl Noise", "Particles", "Custom Shader", "WebGL"],
+      "complexity": 3,
+      "source": null,
+      "addedAt": "2026-05-04"
+    }
+  ]
+}

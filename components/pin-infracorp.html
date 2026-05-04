@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Location Pin – Flow Field (infracorp)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #101b23; overflow: hidden; font-family: sans-serif; }
+    canvas { display: block; }
+    #ui {
+      position: fixed; top: 48px; left: 56px;
+      color: #fff; pointer-events: none; z-index: 10;
+    }
+    #ui h1 { font-size: 2.6rem; font-weight: 300; letter-spacing: -0.02em; line-height: 1.15; }
+    #ui p  { margin-top: 14px; font-size: 0.85rem; opacity: 0.45; letter-spacing: 0.04em; }
+    #loading {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #101b23; color: rgba(255,255,255,0.4);
+      font-size: 0.85rem; letter-spacing: 0.08em;
+      z-index: 20; transition: opacity 1.2s ease;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading">LOADING PARTICLES…</div>
+<div id="ui">
+  <h1>Location Pin<br>Particle Cloud</h1>
+  <p>Move your cursor to interact</p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.169.0",
+    "three/addons/": "https://esm.sh/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }             from 'three/addons/loaders/GLTFLoader.js';
+import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import { MeshSurfaceSampler }     from 'three/addons/math/MeshSurfaceSampler.js';
+import { mergeGeometries }        from 'three/addons/utils/BufferGeometryUtils.js';
+
+const {
+  Group, Clock, Vector3, Vector2, Raycaster,
+  BufferGeometry, BufferAttribute, ShaderMaterial,
+  Points, Color, MathUtils, Mesh, MeshStandardMaterial,
+  PerspectiveCamera, WebGLRenderer, Scene, Uniform,
+} = THREE;
+
+<!-- CORE CODE START -->
+// ─── SHADERS (verbatim from infracorp.global) ────────────────────────────
+
+const GpgpuFragmentShader = /* glsl */`
+  #define PI 3.141592653589793
+  #define PI2 6.283185307179586
+  uniform float uTime;
+  uniform float uDeltaTime;
+  uniform vec3 uMouse;
+  uniform float uMouseDelta;
+  uniform float uDisturbIntensity;
+  uniform float uRepulsionForce;
+  uniform bool uInteractive;
+  uniform sampler2D uBaseParticlesTexture;
+
+  vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+  float permute(float x){return floor(mod(((x*34.0)+1.0)*x, 289.0));}
+  vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+  float taylorInvSqrt(float r){return 1.79284291400159 - 0.85373472095314 * r;}
+  vec4 grad4(float j, vec4 ip){
+    const vec4 ones = vec4(1.0, 1.0, 1.0, -1.0);
+    vec4 p,s;
+    p.xyz = floor( fract (vec3(j) * ip.xyz) * 7.0) * ip.z - 1.0;
+    p.w = 1.5 - dot(abs(p.xyz), ones.xyz);
+    s = vec4(lessThan(p, vec4(0.0)));
+    p.xyz = p.xyz + (s.xyz*2.0 - 1.0) * s.www;
+    return p;
+  }
+  float snoise(vec4 v){
+    const vec2 C = vec2( 0.138196601125010504, 0.309016994374947451);
+    vec4 i  = floor(v + dot(v, C.yyyy) );
+    vec4 x0 = v - i + dot(i, C.xxxx);
+    vec4 i0;
+    vec3 isX = step( x0.yzw, x0.xxx );
+    vec3 isYZ = step( x0.zww, x0.yyz );
+    i0.x = isX.x + isX.y + isX.z;
+    i0.yzw = 1.0 - isX;
+    i0.y += isYZ.x + isYZ.y;
+    i0.zw += 1.0 - isYZ.xy;
+    i0.z += isYZ.z;
+    i0.w += 1.0 - isYZ.z;
+    vec4 i3 = clamp( i0, 0.0, 1.0 );
+    vec4 i2 = clamp( i0-1.0, 0.0, 1.0 );
+    vec4 i1 = clamp( i0-2.0, 0.0, 1.0 );
+    vec4 x1 = x0 - i1 + 1.0 * C.xxxx;
+    vec4 x2 = x0 - i2 + 2.0 * C.xxxx;
+    vec4 x3 = x0 - i3 + 3.0 * C.xxxx;
+    vec4 x4 = x0 - 1.0 + 4.0 * C.xxxx;
+    i = mod(i, 289.0);
+    float j0 = permute( permute( permute( permute(i.w) + i.z) + i.y) + i.x);
+    vec4 j1 = permute( permute( permute( permute(
+      i.w + vec4(i1.w, i2.w, i3.w, 1.0 ))
+      + i.z + vec4(i1.z, i2.z, i3.z, 1.0 ))
+      + i.y + vec4(i1.y, i2.y, i3.y, 1.0 ))
+      + i.x + vec4(i1.x, i2.x, i3.x, 1.0 ));
+    vec4 ip = vec4(1.0/294.0, 1.0/49.0, 1.0/7.0, 0.0);
+    vec4 p0 = grad4(j0,   ip);
+    vec4 p1 = grad4(j1.x, ip);
+    vec4 p2 = grad4(j1.y, ip);
+    vec4 p3 = grad4(j1.z, ip);
+    vec4 p4 = grad4(j1.w, ip);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    p4 *= taylorInvSqrt(dot(p4,p4));
+    vec3 m0 = max(0.6 - vec3(dot(x0,x0), dot(x1,x1), dot(x2,x2)), 0.0);
+    vec2 m1 = max(0.6 - vec2(dot(x3,x3), dot(x4,x4)), 0.0);
+    m0 = m0 * m0; m1 = m1 * m1;
+    return 49.0 * ( dot(m0*m0, vec3( dot(p0,x0), dot(p1,x1), dot(p2,x2)))
+                  + dot(m1*m1, vec2( dot(p3,x3), dot(p4,x4))));
+  }
+
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec4 particle     = texture2D(uParticles, uv);
+    vec4 baseParticle = texture2D(uBaseParticlesTexture, uv);
+    float uRepelStrength = clamp(uMouseDelta, 0.0, uRepulsionForce);
+    vec3 dir      = normalize(particle.xyz - uMouse.xyz);
+    float dist    = distance(uMouse.xyz, particle.xyz);
+    float repF    = uRepelStrength / (dist * (dist + 1.0));
+    if (uInteractive) particle.xyz += dir * repF * uRepelStrength;
+    if (particle.a >= 1.0) {
+      particle.a   = mod(particle.a, 1.0);
+      particle.xyz = baseParticle.xyz;
+    } else {
+      float disturbIntensity = (uDisturbIntensity > 0.0) ? pow(uDisturbIntensity, 2.0) : 0.0;
+      vec3 flowField = vec3(
+        sin(snoise(vec4(particle.xyz, uDeltaTime)) * PI2 + uTime) * 2.0,
+        sin(snoise(vec4(particle.yxz, uDeltaTime)) * PI2 + uTime) * 2.0,
+        sin(snoise(vec4(particle.zxy, uDeltaTime)) * PI2 + uTime) * 2.0
+      );
+      if (disturbIntensity > 0.0) {
+        particle.xyz += flowField * disturbIntensity * 0.01 * particle.a;
+        particle.a   += uDeltaTime;
+      } else {
+        particle.a += uDeltaTime;
+      }
+    }
+    gl_FragColor.rgba = particle;
+  }
+`;
+
+const ParticlesVertexShader = /* glsl */`
+  #define PI 3.141592653589793
+  uniform float uSize;
+  uniform vec3  uColors[2];
+  uniform sampler2D uParticlesTexture;
+  uniform vec2  uResolution;
+  attribute vec2  aParticlesUv;
+  attribute vec2  aMeshUv;
+  attribute float aParticlesSize;
+  attribute vec3  aNormal;
+  varying vec3  vColor[2];
+  varying float vParticlesAlpha;
+  varying vec2  vMeshUv;
+  varying vec3  vNormal;
+  varying vec3  vParticleTexture;
+
+  void main() {
+    vec4 particle = texture2D(uParticlesTexture, aParticlesUv);
+    vec4 viewPos  = viewMatrix * modelMatrix * vec4(particle.xyz, 1.0);
+    gl_Position   = projectionMatrix * viewPos;
+    float lifeSize = smoothstep(0.0, 1.0, sin(particle.a * PI));
+    gl_PointSize   = aParticlesSize * lifeSize * uSize * uResolution.y;
+    gl_PointSize  *= (1.0 / -viewPos.z);
+    vColor          = uColors;
+    vParticlesAlpha = particle.a;
+    vParticleTexture= particle.xyz;
+    vMeshUv         = aMeshUv;
+    vNormal         = aNormal;
+  }
+`;
+
+const ParticlesFragmentShader = /* glsl */`
+  uniform int   uShape;
+  uniform bool  uHasColors;
+  uniform float uOpacity;
+  varying vec3  vColor[2];
+  varying float vParticlesAlpha;
+  varying vec3  vNormal;
+
+  void main() {
+    vec2  uv     = gl_PointCoord.xy;
+    float circle = 1.0;
+    if (uShape == 1) {
+      circle = smoothstep(0.5, 0.51, 1.0 - length(uv - vec2(0.5)));
+    }
+    if (uShape == 3) {
+      circle = smoothstep(0.5, 0.0, length(uv - vec2(0.5)));
+    }
+    if (circle < 0.01) discard;
+    vec3 color = vHasColors
+      ? mix(vColor[0], vColor[1], smoothstep(0.0, 1.0, 1.0 - vNormal.y))
+      : vColor[0];
+    gl_FragColor = vec4(color, uOpacity);
+  }
+`;
+
+// ─── FlowFieldParticles (verbatim from infracorp.global) ─────────────────
+class FlowFieldParticles {
+  constructor(renderer, camera, options = {}) {
+    this.skipOptimization  = options.skipOptimization  ?? true;
+    this.interactive       = options.interactive       ?? true;
+    this.childMeshVisible  = options.childMeshVisible  || false;
+    this.colors            = options.colors            || null;
+    this.size              = options.size              || 0.1;
+    this.disturbIntensity  = options.disturbIntensity  || 0.3;
+    this.repulsionForce    = options.repulsionForce    || 1;
+    this.shape             = options.shape             || 'disc';
+    this.particleCount     = options.particleCount     || 10000;
+    this.emitter           = options.emitter;
+    this.renderer          = renderer;
+    this.camera            = camera;
+    this.scene             = new Group();
+    this.clock             = new Clock();
+    this.mouse             = new Vector3();
+    this.raycaster         = new Raycaster();
+    this.mousePosition     = new Vector2();
+    this.lastMousePosX     = 0;
+    this.mouseDeltaValue   = 0;
+    this.previousTime      = 0;
+    this.gpgpu             = null;
+    this.particlesMaterial = null;
+    this.particlesGeometry = null;
+    this.particlesPoints   = null;
+    this.sourceMesh        = null;
+    this.surfaceSampler    = null;
+  }
+
+  getParticleShapeIntValue(s) {
+    return { disc: 1, ring: 2, sphere: 3, square: 4 }[s] || 1;
+  }
+
+  initFromMesh(mesh) {
+    this.sourceMesh = mesh;
+    this.sourceMesh.visible = this.childMeshVisible;
+    this.scene.add(this.sourceMesh);
+    this.surfaceSampler = new MeshSurfaceSampler(mesh).build();
+    this.emitter.addEventListener('initgpu', () => {
+      this.setupGPGPU();
+      this.setupParticles();
+      this.setupMaterial(mesh.material);
+      this.setupEventListeners();
+    });
+  }
+
+  setupGPGPU() {
+    const size = Math.ceil(Math.sqrt(this.particleCount));
+    const GCR  = new GPUComputationRenderer(size, size, this.renderer);
+    const dataTexture      = GCR.createTexture();
+    const sampledPositions = this.sampleMeshSurface();
+
+    for (let i = 0; i < this.particleCount; i++) {
+      const i3 = i*3, i4 = i*4;
+      if (i < sampledPositions.length/3) {
+        dataTexture.image.data[i4]   = sampledPositions[i3];
+        dataTexture.image.data[i4+1] = sampledPositions[i3+1];
+        dataTexture.image.data[i4+2] = sampledPositions[i3+2];
+      } else {
+        const ri = Math.floor(Math.random() * (sampledPositions.length/3)) * 3;
+        dataTexture.image.data[i4]   = sampledPositions[ri];
+        dataTexture.image.data[i4+1] = sampledPositions[ri+1];
+        dataTexture.image.data[i4+2] = sampledPositions[ri+2];
+      }
+      dataTexture.image.data[i4+3] = Math.random();
+    }
+
+    const particlesVariable = GCR.addVariable('uParticles', GpgpuFragmentShader, dataTexture);
+    GCR.setVariableDependencies(particlesVariable, [particlesVariable]);
+    GCR.init();
+
+    const u = particlesVariable.material.uniforms;
+    u.uTime                 = new Uniform(0);
+    u.uDeltaTime            = new Uniform(0);
+    u.uBaseParticlesTexture = new Uniform(dataTexture);
+    u.uDisturbIntensity     = new Uniform(this.disturbIntensity);
+    u.uRepulsionForce       = new Uniform(this.repulsionForce);
+    u.uMouse                = new Uniform(new Vector3());
+    u.uMouseDelta           = new Uniform(0);
+    u.uInteractive          = new Uniform(this.interactive);
+
+    this.gpgpu = { renderer: GCR, particlesVariable, size };
+  }
+
+  sampleMeshSurface() {
+    const positions = new Float32Array(this.particleCount * 3);
+    const tmp = new Vector3(), tn = new Vector3();
+    for (let i = 0; i < this.particleCount; i++) {
+      this.surfaceSampler.sample(tmp, tn);
+      positions[i*3] = tmp.x; positions[i*3+1] = tmp.y; positions[i*3+2] = tmp.z;
+    }
+    return positions;
+  }
+
+  setupParticles() {
+    const { size } = this.gpgpu;
+    const uvArr   = new Float32Array(this.particleCount * 2);
+    const sizeArr = new Float32Array(this.particleCount);
+    const posArr  = new Float32Array(this.particleCount * 3);
+    const normArr = new Float32Array(this.particleCount * 3);
+    const uvMesh  = new Float32Array(this.particleCount * 2);
+    const tp = new Vector3(), tn = new Vector3();
+
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const i = y*size+x;
+      if (i >= this.particleCount) break;
+      const i2 = i*2, i3 = i*3;
+      uvArr[i2] = (x+0.5)/size; uvArr[i2+1] = (y+0.5)/size;
+      sizeArr[i] = Math.random();
+      this.surfaceSampler.sample(tp, tn);
+      posArr[i3] = tp.x; posArr[i3+1] = tp.y; posArr[i3+2] = tp.z;
+      normArr[i3] = tn.x; normArr[i3+1] = tn.y; normArr[i3+2] = tn.z;
+      uvMesh[i2] = (tp.x+1)*0.5; uvMesh[i2+1] = (tp.y+1)*0.5;
+    }
+
+    this.particlesGeometry = new BufferGeometry();
+    this.particlesGeometry.setDrawRange(0, this.particleCount);
+    this.particlesGeometry.setAttribute('aParticlesUv',   new BufferAttribute(uvArr,   2));
+    this.particlesGeometry.setAttribute('aParticlesSize', new BufferAttribute(sizeArr, 1));
+    this.particlesGeometry.setAttribute('position',       new BufferAttribute(posArr,  3));
+    this.particlesGeometry.setAttribute('aNormal',        new BufferAttribute(normArr, 3));
+    this.particlesGeometry.setAttribute('aMeshUv',        new BufferAttribute(uvMesh,  2));
+  }
+
+  setupMaterial(sourceMaterial) {
+    this.particlesMaterial = new ShaderMaterial({
+      uniforms: {
+        uTime:             new Uniform(0),
+        uSize:             new Uniform(this.size),
+        uColors:           new Uniform([]),
+        uOpacity:          new Uniform(1),
+        uHasColors:        new Uniform(true),
+        uShape:            new Uniform(this.getParticleShapeIntValue(this.shape)),
+        uParticlesTexture: new Uniform(null),
+        uResolution:       new Uniform([0, 0]),
+      },
+      vertexShader:   ParticlesVertexShader,
+      fragmentShader: ParticlesFragmentShader,
+      transparent: true,
+    });
+    const colorsArray = (this.colors || [sourceMaterial?.color || new Color(0xffffff)]).map(c =>
+      typeof c === 'string' ? new Color(c) : (c?.isColor ? c : new Color(c))
+    );
+    if (colorsArray.length < 2) colorsArray.push(colorsArray[0]);
+    this.particlesMaterial.uniforms.uColors.value = colorsArray;
+    this.particlesPoints = new Points(this.particlesGeometry, this.particlesMaterial);
+    this.scene.add(this.particlesPoints);
+  }
+
+  setupEventListeners() {
+    this.handlePointerMove = (e) => {
+      if (!this.interactive) return;
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      this.mousePosition.set(
+        (e.clientX - rect.left) / rect.width  *  2 - 1,
+        -((e.clientY - rect.top)  / rect.height * 2 - 1)
+      );
+      this.raycaster.setFromCamera(this.mousePosition, this.camera);
+      const hits = this.raycaster.intersectObject(this.sourceMesh, true);
+      if (hits.length > 0) {
+        const inv = this.sourceMesh.matrixWorld.clone().invert();
+        this.mouse.copy(hits[0].point).applyMatrix4(inv);
+      }
+    };
+    this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
+    this.renderer.domElement.addEventListener('mousemove',   this.handlePointerMove);
+  }
+
+  update() {
+    if (!this.gpgpu || !this.particlesMaterial) return;
+    const elapsed   = this.clock.getElapsedTime();
+    const deltaTime = Math.min(elapsed - this.previousTime, 1/60);
+    this.previousTime = elapsed;
+    this.mouseDeltaValue = MathUtils.lerp(
+      this.mouseDeltaValue, Math.abs(this.lastMousePosX - this.mouse.x), 0.1
+    );
+    if (this.particlesPoints && this.sourceMesh) {
+      this.particlesPoints.position.copy(this.sourceMesh.position);
+    }
+    this.gpgpu.renderer.compute();
+    const u = this.gpgpu.particlesVariable.material.uniforms;
+    u.uTime.value             = elapsed;
+    u.uDeltaTime.value        = deltaTime;
+    u.uDisturbIntensity.value = this.disturbIntensity;
+    u.uRepulsionForce.value   = this.repulsionForce;
+    u.uMouse.value.copy(this.mouse);
+    u.uMouseDelta.value       = this.mouseDeltaValue;
+    const mu = this.particlesMaterial.uniforms;
+    mu.uTime.value             = elapsed;
+    mu.uResolution.value       = [this.gpgpu.size, this.gpgpu.size];
+    mu.uParticlesTexture.value = this.gpgpu.renderer
+      .getCurrentRenderTarget(this.gpgpu.particlesVariable).texture;
+    this.lastMousePosX = MathUtils.lerp(this.lastMousePosX, this.mouse.x, 0.5);
+  }
+
+  dispose() {
+    this.gpgpu?.renderer.dispose();
+    this.particlesMaterial?.dispose();
+    this.particlesGeometry?.dispose();
+    this.renderer.domElement.removeEventListener('pointermove', this.handlePointerMove);
+    this.renderer.domElement.removeEventListener('mousemove',   this.handlePointerMove);
+    this.scene.clear();
+  }
+}
+<!-- CORE CODE END -->
+
+// ─── Scene Setup ─────────────────────────────────────────────────────────
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const renderer = new WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x101b23);
+
+const scene  = new Scene();
+const camera = new PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 0.5, 7);
+camera.lookAt(0, 0, 0);
+
+const emitter = new EventTarget();
+
+const particles = new FlowFieldParticles(renderer, camera, {
+  particleCount:    2000,
+  size:             1.1,
+  disturbIntensity: 0.29,
+  repulsionForce:   1,
+  shape:            'disc',
+  colors:           ['#4dc8f0', '#ffffff'],
+  interactive:      true,
+  skipOptimization: true,
+  emitter,
+});
+
+const loader = new GLTFLoader();
+loader.load('../assets/pin-location.glb', gltf => {
+  gltf.scene.updateMatrixWorld(true);
+  const geos = [];
+  gltf.scene.traverse(child => {
+    if (!child.isMesh) return;
+    const geo = child.geometry.clone();
+    geo.applyMatrix4(child.matrixWorld);
+    Object.keys(geo.attributes)
+      .filter(k => !['position','normal'].includes(k))
+      .forEach(k => geo.deleteAttribute(k));
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+    geos.push(geo);
+  });
+  if (!geos.length) return;
+  const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos);
+  merged.computeBoundingBox();
+  const center = merged.boundingBox.getCenter(new Vector3());
+  const sz     = merged.boundingBox.getSize(new Vector3());
+  merged.translate(-center.x, -center.y, -center.z);
+  const sc = 3 / Math.max(sz.x, sz.y, sz.z);
+  merged.scale(sc, sc, sc);
+  merged.computeVertexNormals();
+  const mesh = new Mesh(merged, new MeshStandardMaterial({ color: 0x4dc8f0 }));
+  particles.initFromMesh(mesh);
+  emitter.dispatchEvent(new Event('initgpu'));
+  scene.add(particles.scene);
+  const el = document.getElementById('loading');
+  el.style.opacity = '0';
+  setTimeout(() => el.remove(), 1300);
+  animate();
+}, undefined, err => console.error(err));
+
+let autoRotateY = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  autoRotateY += 0.003;
+  if (particles.scene) particles.scene.rotation.y = autoRotateY;
+  particles.update();
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

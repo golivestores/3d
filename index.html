@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Library</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #4dc8f0;
+      --tag-bg: #1f2937;
+      --tag-text: #93c5fd;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 20px 40px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 100;
+    }
+
+    header .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    header .count {
+      margin-left: auto;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    /* ── Filter bar ── */
+    #filter-bar {
+      padding: 20px 40px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .filter-pill {
+      padding: 4px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .filter-pill:hover,
+    .filter-pill.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(77, 200, 240, 0.08);
+    }
+
+    /* ── Grid ── */
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 1px;
+      background: var(--border);
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      transition: background 0.15s;
+    }
+
+    .card:hover { background: #0f1419; }
+
+    /* preview iframe container */
+    .preview-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      overflow: hidden;
+      background: #101b23;
+    }
+
+    .preview-wrap iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+      pointer-events: none;
+    }
+
+    .preview-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      padding: 12px;
+      background: linear-gradient(to top, rgba(0,0,0,0.5) 0%, transparent 50%);
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .card:hover .preview-overlay { opacity: 1; }
+
+    .btn-open {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(8px);
+      color: #fff;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 0.15s;
+    }
+
+    .btn-open:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* card body */
+    .card-body {
+      padding: 20px 24px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+    }
+
+    .complexity {
+      display: flex;
+      gap: 3px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .complexity span {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+
+    .complexity span.on { background: var(--accent); }
+
+    .card-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .card-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      font-size: 0.72rem;
+      letter-spacing: 0.02em;
+    }
+
+    .source-link {
+      font-size: 0.75rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .source-link a {
+      color: var(--accent);
+      text-decoration: none;
+      opacity: 0.8;
+    }
+
+    .source-link a:hover { opacity: 1; text-decoration: underline; }
+
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+
+    .btn-copy {
+      padding: 7px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-copy:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-copy.copied {
+      border-color: #3fb950;
+      color: #3fb950;
+    }
+
+    .btn-copy svg { width: 13px; height: 13px; }
+
+    /* ── Empty state ── */
+    #empty {
+      display: none;
+      grid-column: 1 / -1;
+      padding: 80px 40px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #1f2937;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      opacity: 0;
+      transition: all 0.25s;
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>3D Library</h1>
+  <span class="count" id="count-label"></span>
+</header>
+
+<div id="filter-bar">
+  <button class="filter-pill active" data-tag="all">All</button>
+</div>
+
+<div id="grid"></div>
+<div id="empty">No components match this filter.</div>
+<div id="toast"></div>
+
+<script>
+const CDN = 'https://raw.githubusercontent.com/golivestores/3d/main/';
+
+async function init() {
+  const res = await fetch('registry.json');
+  const { components } = await res.json();
+
+  renderFilters(components);
+  renderCards(components);
+  document.getElementById('count-label').textContent = `${components.length} component${components.length !== 1 ? 's' : ''}`;
+
+  window._allComponents = components;
+}
+
+function renderFilters(components) {
+  const bar = document.getElementById('filter-bar');
+  const tags = [...new Set(components.flatMap(c => c.tags))].sort();
+  tags.forEach(tag => {
+    const btn = document.createElement('button');
+    btn.className = 'filter-pill';
+    btn.dataset.tag = tag;
+    btn.textContent = tag;
+    bar.appendChild(btn);
+  });
+
+  bar.addEventListener('click', e => {
+    const pill = e.target.closest('.filter-pill');
+    if (!pill) return;
+    bar.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    const tag = pill.dataset.tag;
+    const filtered = tag === 'all'
+      ? window._allComponents
+      : window._allComponents.filter(c => c.tags.includes(tag));
+    renderCards(filtered);
+  });
+}
+
+function renderCards(components) {
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+  grid.innerHTML = '';
+
+  if (!components.length) {
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  components.forEach(c => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="preview-wrap">
+        <iframe src="${c.file}" loading="lazy" title="${c.title} preview" sandbox="allow-scripts allow-same-origin"></iframe>
+        <div class="preview-overlay">
+          <a class="btn-open" href="${c.file}" target="_blank">Open full demo ↗</a>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="card-header">
+          <div class="card-title">${c.title}</div>
+          <div class="complexity" title="Complexity: ${c.complexity}/3">
+            ${[1,2,3].map(n => `<span class="${n <= c.complexity ? 'on' : ''}"></span>`).join('')}
+          </div>
+        </div>
+        <div class="card-desc">${c.description}</div>
+        <div class="card-tags">${c.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
+        ${c.source ? `<div class="source-link">Source: <a href="${c.source}" target="_blank">${c.sourceLabel}</a></div>` : ''}
+        <div class="card-actions">
+          <button class="btn-copy" data-file="${c.file}">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+            Copy core code
+          </button>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // Wire copy buttons
+  grid.querySelectorAll('.btn-copy').forEach(btn => {
+    btn.addEventListener('click', () => copyCore(btn));
+  });
+}
+
+async function copyCore(btn) {
+  const file = btn.dataset.file;
+  try {
+    const text = await (await fetch(file)).text();
+    const start = text.indexOf('<!-- CORE CODE START -->');
+    const end   = text.indexOf('<!-- CORE CODE END -->');
+    const code  = (start !== -1 && end !== -1)
+      ? text.slice(start + 24, end).trim()
+      : text;
+    await navigator.clipboard.writeText(code);
+    btn.classList.add('copied');
+    btn.querySelector('span') && (btn.lastChild.textContent = ' Copied!');
+    btn.innerHTML = btn.innerHTML.replace('Copy core code', 'Copied!');
+    showToast('Core code copied to clipboard');
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = btn.innerHTML.replace('Copied!', 'Copy core code');
+    }, 2000);
+  } catch(e) {
+    showToast('Copy failed — open the file directly');
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+init();
+</script>
+</body>
+</html>

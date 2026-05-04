@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Location Pin – Particle Cloud</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #101b23; overflow: hidden; }
+    canvas { display: block; }
+    #ui {
+      position: fixed;
+      top: 48px; left: 56px;
+      color: #fff;
+      pointer-events: none;
+      font-family: sans-serif;
+    }
+    #ui h1 { font-size: 2.4rem; font-weight: 300; letter-spacing: -0.02em; }
+    #ui p  { margin-top: 10px; font-size: 0.8rem; opacity: 0.4; letter-spacing: 0.05em; }
+    #loading {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #101b23;
+      color: rgba(255,255,255,0.35);
+      font-family: sans-serif; font-size: 0.8rem; letter-spacing: 0.1em;
+      z-index: 20; transition: opacity 1s ease;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading">INITIALISING…</div>
+<div id="ui">
+  <h1>Location Pin<br>Particle Cloud</h1>
+  <p>Move cursor to disturb</p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.169.0",
+    "three/addons/": "https://esm.sh/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }             from 'three/addons/loaders/GLTFLoader.js';
+import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import { MeshSurfaceSampler }     from 'three/addons/math/MeshSurfaceSampler.js';
+import { mergeGeometries }        from 'three/addons/utils/BufferGeometryUtils.js';
+
+<!-- CORE CODE START -->
+// ─── GPGPU: physics shader ────────────────────────────────────────────────
+// Uses 3D value noise + curl-noise flow field. Independent implementation.
+const physicsShader = /* glsl */`
+  uniform float uTime;
+  uniform float uDelta;
+  uniform vec3  uCursor;
+  uniform float uCursorSpeed;
+  uniform float uTurbulence;
+  uniform float uPush;
+  uniform bool  uMouseOn;
+  uniform sampler2D uOrigin;
+
+  float hash1(float n) { return fract(sin(n) * 43758.5453); }
+  float vnoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n = i.x + i.y * 57.0 + 113.0 * i.z;
+    return mix(
+      mix(mix(hash1(n),       hash1(n+1.0),   u.x),
+          mix(hash1(n+57.0),  hash1(n+58.0),  u.x), u.y),
+      mix(mix(hash1(n+113.0), hash1(n+114.0), u.x),
+          mix(hash1(n+170.0), hash1(n+171.0), u.x), u.y),
+      u.z
+    );
+  }
+
+  vec3 flowVelocity(vec3 p, float t) {
+    float e = 0.05;
+    float tp = t * 0.18;
+    vec3 px = vec3(p.x + e, p.y, p.z);
+    vec3 py = vec3(p.x, p.y + e, p.z);
+    vec3 pz = vec3(p.x, p.y, p.z + e);
+    float Nx  = vnoise(p  + vec3(0.0, 0.0, tp));
+    float Nx_e= vnoise(py + vec3(0.0, 0.0, tp));
+    float Nx_f= vnoise(pz + vec3(0.0, 0.0, tp));
+    float Ny  = vnoise(p  + vec3(3.7, 0.0, tp));
+    float Ny_e= vnoise(px + vec3(3.7, 0.0, tp));
+    float Ny_f= vnoise(pz + vec3(3.7, 0.0, tp));
+    float Nz  = vnoise(p  + vec3(0.0, 1.9, tp));
+    float Nz_e= vnoise(px + vec3(0.0, 1.9, tp));
+    float Nz_f= vnoise(py + vec3(0.0, 1.9, tp));
+    return vec3(
+      (Nz_f - Nz) / e - (Ny_f - Ny) / e,
+      (Nx_e - Nx) / e - (Nz_e - Nz) / e,
+      (Ny_e - Ny) / e - (Nx_e - Nx) / e
+    );
+  }
+
+  void main() {
+    vec2 uv    = gl_FragCoord.xy / resolution.xy;
+    vec4 state = texture2D(uParticles, uv);
+    vec4 origin= texture2D(uOrigin, uv);
+    if (uMouseOn) {
+      vec3  diff = state.xyz - uCursor;
+      float d    = length(diff);
+      float str  = uPush * uCursorSpeed / max(d * (d + 0.8), 0.001);
+      state.xyz += normalize(diff) * str;
+    }
+    if (state.w >= 1.0) {
+      state.xyz = origin.xyz;
+      state.w   = fract(state.w);
+    } else {
+      float turb = uTurbulence * uTurbulence * 0.008;
+      state.xyz += flowVelocity(state.xyz * 1.4, uTime) * turb * state.w;
+      state.w   += uDelta;
+    }
+    gl_FragColor = state;
+  }
+`;
+
+// ─── VERTEX shader ────────────────────────────────────────────────────────
+const vertShader = /* glsl */`
+  uniform sampler2D uParticleTex;
+  uniform float uPointScale;
+  uniform vec3  uColorA;
+  uniform vec3  uColorB;
+  attribute vec2  aTexCoord;
+  attribute float aRandSize;
+  varying vec3  vCol;
+  varying float vLife;
+  void main() {
+    vec4  state = texture2D(uParticleTex, aTexCoord);
+    vLife = state.w;
+    float t = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    vCol    = mix(uColorB, uColorA, t);
+    vec4 viewPos = viewMatrix * modelMatrix * vec4(state.xyz, 1.0);
+    gl_Position  = projectionMatrix * viewPos;
+    gl_PointSize = aRandSize * sin(vLife * 3.14159) * uPointScale / -viewPos.z;
+  }
+`;
+
+// ─── FRAGMENT shader ──────────────────────────────────────────────────────
+const fragShader = /* glsl */`
+  uniform float uOpacity;
+  varying vec3  vCol;
+  varying float vLife;
+  void main() {
+    vec2  c    = gl_PointCoord - 0.5;
+    float dist = dot(c, c);
+    if (dist > 0.25) discard;
+    float alpha = (1.0 - smoothstep(0.15, 0.25, dist)) * sin(vLife * 3.14159) * uOpacity;
+    gl_FragColor = vec4(vCol, alpha);
+  }
+`;
+
+// ─── ParticleCloud ────────────────────────────────────────────────────────
+class ParticleCloud {
+  constructor(renderer, camera, opts = {}) {
+    this.renderer   = renderer;
+    this.camera     = camera;
+    this.count      = opts.count      ?? 1500;
+    this.turbulence = opts.turbulence ?? 0.18;
+    this.pushForce  = opts.pushForce  ?? 0.35;
+    this.colorA     = opts.colorA     ?? new THREE.Color('#ffffff');
+    this.colorB     = opts.colorB     ?? new THREE.Color('#4dc8f0');
+    this.pointScale = opts.pointScale ?? 60;
+    this.group      = new THREE.Group();
+    this._cursor    = new THREE.Vector3();
+    this._cursorSpeed = 0;
+    this._prevCurX  = 0;
+    this._clock     = new THREE.Clock();
+    this._prevT     = 0;
+    this._raycaster = new THREE.Raycaster();
+    this._ndcMouse  = new THREE.Vector2();
+    this._texSize   = Math.ceil(Math.sqrt(this.count));
+  }
+
+  attach(mesh) {
+    this._mesh   = mesh;
+    mesh.visible = false;
+    this.group.add(mesh);
+    this.sampler = new MeshSurfaceSampler(mesh).build();
+    this._buildGPGPU();
+    this._buildPoints();
+    this._bindMouse();
+  }
+
+  _samplePositions() {
+    const pos = new Float32Array(this.count * 4);
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < this.count; i++) {
+      this.sampler.sample(tmp);
+      pos[i*4] = tmp.x; pos[i*4+1] = tmp.y;
+      pos[i*4+2] = tmp.z; pos[i*4+3] = Math.random();
+    }
+    return pos;
+  }
+
+  _buildGPGPU() {
+    const s   = this._texSize;
+    const gcr = new GPUComputationRenderer(s, s, this.renderer);
+    const originTex = gcr.createTexture();
+    const posTex    = gcr.createTexture();
+    const sampled   = this._samplePositions();
+    for (let i = 0; i < this.count; i++) {
+      const i4 = i * 4;
+      originTex.image.data.set(sampled.slice(i4, i4+3), i4);
+      originTex.image.data[i4+3] = 1;
+      posTex.image.data.set(sampled.slice(i4, i4+4), i4);
+    }
+    const variable = gcr.addVariable('uParticles', physicsShader, posTex);
+    gcr.setVariableDependencies(variable, [variable]);
+    const u = variable.material.uniforms;
+    u.uTime        = new THREE.Uniform(0);
+    u.uDelta       = new THREE.Uniform(0);
+    u.uOrigin      = new THREE.Uniform(originTex);
+    u.uCursor      = new THREE.Uniform(new THREE.Vector3());
+    u.uCursorSpeed = new THREE.Uniform(0);
+    u.uTurbulence  = new THREE.Uniform(this.turbulence);
+    u.uPush        = new THREE.Uniform(this.pushForce);
+    u.uMouseOn     = new THREE.Uniform(false);
+    gcr.init();
+    this.gpgpu = { gcr, variable };
+  }
+
+  _buildPoints() {
+    const s     = this._texSize;
+    const total = s * s;
+    const texCoords = new Float32Array(total * 2);
+    const randSizes = new Float32Array(total);
+    const positions = new Float32Array(total * 3);
+    const normals   = new Float32Array(total * 3);
+    const tmp = new THREE.Vector3(), tnorm = new THREE.Vector3();
+    for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
+      const i = y*s+x;
+      texCoords[i*2]   = (x+0.5)/s;
+      texCoords[i*2+1] = (y+0.5)/s;
+      randSizes[i]     = 0.4 + Math.random() * 0.6;
+      if (i < this.count) {
+        this.sampler.sample(tmp, tnorm);
+        positions.set([tmp.x,tmp.y,tmp.z], i*3);
+        normals.set([tnorm.x,tnorm.y,tnorm.z], i*3);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setDrawRange(0, this.count);
+    geo.setAttribute('aTexCoord', new THREE.BufferAttribute(texCoords, 2));
+    geo.setAttribute('aRandSize', new THREE.BufferAttribute(randSizes, 1));
+    geo.setAttribute('position',  new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal',    new THREE.BufferAttribute(normals,   3));
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uParticleTex: new THREE.Uniform(null),
+        uPointScale:  new THREE.Uniform(this.pointScale),
+        uColorA:      new THREE.Uniform(this.colorA),
+        uColorB:      new THREE.Uniform(this.colorB),
+        uOpacity:     new THREE.Uniform(1.0),
+      },
+      vertexShader: vertShader, fragmentShader: fragShader,
+      transparent: true, depthWrite: false,
+    });
+    this.points = new THREE.Points(geo, this.mat);
+    this.group.add(this.points);
+  }
+
+  _bindMouse() {
+    window.addEventListener('mousemove', e => {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      this._ndcMouse.set(
+        (e.clientX - rect.left) / rect.width * 2 - 1,
+        -((e.clientY - rect.top) / rect.height * 2 - 1)
+      );
+      this._raycaster.setFromCamera(this._ndcMouse, this.camera);
+      const hits = this._raycaster.intersectObject(this._mesh, true);
+      const u = this.gpgpu.variable.material.uniforms;
+      if (hits.length > 0) {
+        this._cursor.copy(hits[0].point).applyMatrix4(this._mesh.matrixWorld.clone().invert());
+        u.uMouseOn.value = true;
+      } else {
+        u.uMouseOn.value = false;
+      }
+    });
+  }
+
+  tick() {
+    if (!this.gpgpu || !this.mat) return;
+    const elapsed = this._clock.getElapsedTime();
+    const delta   = Math.min(elapsed - this._prevT, 1/30);
+    this._prevT   = elapsed;
+    this._cursorSpeed = THREE.MathUtils.lerp(
+      this._cursorSpeed, Math.abs(this._prevCurX - this._cursor.x), 0.12
+    );
+    this._prevCurX = this._cursor.x;
+    const pu = this.gpgpu.variable.material.uniforms;
+    pu.uTime.value        = elapsed;
+    pu.uDelta.value       = delta;
+    pu.uCursor.value.copy(this._cursor);
+    pu.uCursorSpeed.value = this._cursorSpeed;
+    this.gpgpu.gcr.compute();
+    this.mat.uniforms.uParticleTex.value =
+      this.gpgpu.gcr.getCurrentRenderTarget(this.gpgpu.variable).texture;
+  }
+}
+<!-- CORE CODE END -->
+
+// ─── Scene setup ─────────────────────────────────────────────────────────
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x101b23);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
+camera.position.set(0, 0.4, 7);
+
+const cloud = new ParticleCloud(renderer, camera, {
+  count: 1500, turbulence: 0.18, pushForce: 0.35, pointScale: 60,
+  colorA: new THREE.Color('#ffffff'), colorB: new THREE.Color('#4dc8f0'),
+});
+
+const loader = new GLTFLoader();
+loader.load('../assets/pin-location.glb', gltf => {
+  gltf.scene.updateMatrixWorld(true);
+  const geos = [];
+  gltf.scene.traverse(child => {
+    if (!child.isMesh) return;
+    const g = child.geometry.clone();
+    g.applyMatrix4(child.matrixWorld);
+    ['uv','uv2','color','tangent'].forEach(k => g.deleteAttribute(k));
+    if (!g.attributes.normal) g.computeVertexNormals();
+    geos.push(g);
+  });
+  if (!geos.length) return;
+  const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos);
+  merged.computeBoundingBox();
+  const centre = merged.boundingBox.getCenter(new THREE.Vector3());
+  const span   = merged.boundingBox.getSize(new THREE.Vector3());
+  merged.translate(-centre.x, -centre.y, -centre.z);
+  const sc = 3 / Math.max(span.x, span.y, span.z);
+  merged.scale(sc, sc, sc);
+  merged.computeVertexNormals();
+  const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial());
+  cloud.attach(mesh);
+  scene.add(cloud.group);
+  const el = document.getElementById('loading');
+  el.style.opacity = '0';
+  setTimeout(() => el.remove(), 1100);
+  loop();
+}, undefined, err => console.error(err));
+
+let angle = 0;
+function loop() {
+  requestAnimationFrame(loop);
+  angle += 0.003;
+  cloud.group.rotation.y = angle;
+  cloud.tick();
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
