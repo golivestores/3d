@@ -363,7 +363,7 @@ function renderCards(components) {
     card.className = 'card';
     card.innerHTML = `
       <div class="preview-wrap">
-        <iframe src="${c.file}" loading="lazy" title="${c.title} preview" sandbox="allow-scripts allow-same-origin"></iframe>
+        <iframe src="${c.file}" title="${c.title} preview"></iframe>
         <div class="preview-overlay">
           <a class="btn-open" href="${c.file}" target="_blank">Open full demo ↗</a>
         </div>
